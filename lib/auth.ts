@@ -1,157 +1,84 @@
-import { query } from '@/lib/db';
+import crypto from 'crypto';
+import { query } from './db';
 
-const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID!;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
+const NEXTAUTH_URL = process.env.NEXTAUTH_URL!;
 
-function getRedirectUri(): string {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'http://localhost:3000';
-  return `${appUrl.replace(/\/$/, '')}/api/auth/callback`;
+export const REDIRECT_URI = `${NEXTAUTH_URL}/auth/callback`;
+
+export function getGoogleAuthUrl(state: string) {
+ const params = new URLSearchParams({
+ client_id: GOOGLE_CLIENT_ID,
+ redirect_uri: REDIRECT_URI,
+ response_type: 'code',
+ scope: 'openid profile email',
+ state,
+ });
+ return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }
 
-export function getGoogleAuthUrl(state: string): string {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-
-  if (!clientId) {
-    throw new Error('GOOGLE_CLIENT_ID environment variable is not set');
-  }
-
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: getRedirectUri(),
-    response_type: 'code',
-    scope: 'openid email profile',
-    access_type: 'offline',
-    prompt: 'select_account',
-    state
-  });
-
-  return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+export async function exchangeCodeForToken(code: string) {
+ const response = await fetch('https://oauth2.googleapis.com/token', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+ body: new URLSearchParams({
+ client_id: GOOGLE_CLIENT_ID,
+ client_secret: GOOGLE_CLIENT_SECRET,
+ code,
+ grant_type: 'authorization_code',
+ redirect_uri: REDIRECT_URI,
+ }),
+ });
+ if (!response.ok) {
+ const error = await response.text();
+ throw new Error(`Token exchange failed: ${error}`);
+ }
+ return response.json();
 }
 
-interface GoogleTokenResponse {
-  access_token: string;
-  expires_in: number;
-  scope: string;
-  token_type: string;
-  id_token?: string;
+export async function getGoogleUserInfo(accessToken: string) {
+ const response = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
+ headers: { Authorization: `Bearer ${accessToken}` },
+ });
+ if (!response.ok) throw new Error('Failed to fetch user info');
+ return response.json();
 }
 
-export async function exchangeCodeForToken(code: string): Promise<GoogleTokenResponse> {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+export async function createOrUpdateUser(googleUser: any) {
+ const userId = crypto.randomUUID();
+ const username = generateUsername(googleUser.name || googleUser.email);
 
-  if (!clientId || !clientSecret) {
-    throw new Error('GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET environment variable is not set');
-  }
+ // Create or update user
+ const userResult = await query(
+ `INSERT INTO users (id, email, name, avatar_url, google_id)
+ VALUES ($1, $2, $3, $4, $5)
+ ON CONFLICT (google_id) DO UPDATE SET 
+ email = $2, 
+ name = $3, 
+ avatar_url = $4, 
+ updated_at = NOW()
+ RETURNING id, email, name, avatar_url`,
+ [userId, googleUser.email, googleUser.name, googleUser.picture, googleUser.id]
+ );
+ const user = userResult.rows[0];
 
-  const response = await fetch(GOOGLE_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: getRedirectUri(),
-      grant_type: 'authorization_code'
-    })
-  });
+ // Ensure profile exists for this user
+ await query(
+ `INSERT INTO profiles (user_id, username, display_name, avatar_url)
+ VALUES ($1, $2, $3, $4)
+ ON CONFLICT (user_id) DO NOTHING`,
+ [user.id, username, googleUser.name || 'BrightPress Reader', googleUser.picture || null]
+ );
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Failed to exchange code for token: ${errorBody}`);
-  }
-
-  return response.json();
+ return user;
 }
 
-export interface GoogleUserInfo {
-  id: string;
-  email: string;
-  verified_email: boolean;
-  name: string;
-  picture?: string;
+function generateUsername(name: string): string {
+ const base = name
+ .toLowerCase()
+ .replace(/[^a-z0-9_]/g, '')
+ .slice(0, 20) || 'reader';
+ return base + crypto.randomBytes(4).toString('hex');
 }
 
-export async function getGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo> {
-  const response = await fetch(GOOGLE_USERINFO_URL, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Failed to fetch Google user info: ${errorBody}`);
-  }
-
-  return response.json();
-}
-
-export interface AppUser {
-  id: string;
-  google_id: string;
-  email: string;
-  name: string;
-  avatar_url: string | null;
-  role: string;
-}
-
-export async function generateUsername(name: string): Promise<string> {
-  let base = name
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/g, '')
-    .slice(0, 24);
-
-  if (base.length < 3) {
-    base = 'reader';
-  }
-
-  let candidate = base;
-  let suffix = 0;
-
-  while (true) {
-    const existing = await query('select 1 from profiles where username = $1', [candidate]);
-
-    if (existing.rowCount === 0) {
-      return candidate;
-    }
-
-    suffix += 1;
-    candidate = `${base.slice(0, 20)}${suffix}`;
-  }
-}
-
-export async function createOrUpdateUser(googleUser: GoogleUserInfo): Promise<AppUser> {
-  const existing = await query<AppUser>('select * from users where google_id = $1', [googleUser.id]);
-
-  if (existing.rowCount > 0) {
-    const updated = await query<AppUser>(
-      `update users
-       set email = $1, name = $2, avatar_url = $3, updated_at = now()
-       where google_id = $4
-       returning *`,
-      [googleUser.email, googleUser.name, googleUser.picture ?? null, googleUser.id]
-    );
-
-    return updated.rows[0];
-  }
-
-  const inserted = await query<AppUser>(
-    `insert into users (google_id, email, name, avatar_url, role)
-     values ($1, $2, $3, $4, 'user')
-     returning *`,
-    [googleUser.id, googleUser.email, googleUser.name, googleUser.picture ?? null]
-  );
-
-  const newUser = inserted.rows[0];
-
-  const username = await generateUsername(googleUser.name || googleUser.email.split('@')[0]);
-
-  await query(
-    `insert into profiles (user_id, username, display_name, bio)
-     values ($1, $2, $3, $4)
-     on conflict (user_id) do nothing`,
-    [newUser.id, username, googleUser.name || 'BrightPress reader', '']
-  );
-
-  return newUser;
-}

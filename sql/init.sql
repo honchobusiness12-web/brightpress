@@ -1,164 +1,98 @@
--- BrightPress database schema for Railway PostgreSQL
--- Replaces the previous Supabase auth.users / RLS based schema.
-
-create extension if not exists pgcrypto;
-
--- ---------------------------------------------------------------------------
--- users (replaces Supabase auth.users)
--- ---------------------------------------------------------------------------
-create table if not exists users (
-  id uuid primary key default gen_random_uuid(),
-  google_id text unique not null,
-  email text unique not null,
-  name text not null,
-  avatar_url text,
-  role text not null default 'user' check (role in ('user', 'moderator', 'admin')),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+-- Users table (replaces Supabase auth)
+CREATE TABLE IF NOT EXISTS users (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ email TEXT UNIQUE NOT NULL,
+ name TEXT,
+ avatar_url TEXT,
+ google_id TEXT UNIQUE NOT NULL,
+ role TEXT DEFAULT 'user' CHECK (role IN ('user', 'moderator', 'admin')),
+ created_at TIMESTAMPTZ DEFAULT NOW(),
+ updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS users_email_idx ON users(email);
+CREATE INDEX IF NOT EXISTS users_google_id_idx ON users(google_id);
 
-create index if not exists users_google_id_idx on users(google_id);
-create index if not exists users_email_idx on users(email);
-
--- ---------------------------------------------------------------------------
--- profiles
--- ---------------------------------------------------------------------------
-create table if not exists profiles (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null unique references users(id) on delete cascade,
-  username text unique not null,
-  display_name text not null default 'BrightPress reader',
-  bio text not null default '',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+-- Profiles table
+CREATE TABLE IF NOT EXISTS profiles (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ user_id UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ username TEXT UNIQUE NOT NULL,
+ display_name TEXT DEFAULT 'BrightPress Reader',
+ avatar_url TEXT,
+ bio TEXT DEFAULT '',
+ created_at TIMESTAMPTZ DEFAULT NOW(),
+ updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS profiles_user_id_idx ON profiles(user_id);
+CREATE INDEX IF NOT EXISTS profiles_username_idx ON profiles(username);
 
-create index if not exists profiles_user_id_idx on profiles(user_id);
-create index if not exists profiles_username_idx on profiles(username);
-
--- ---------------------------------------------------------------------------
--- articles
--- ---------------------------------------------------------------------------
-create table if not exists articles (
-  id uuid primary key default gen_random_uuid(),
-  author_id uuid not null references users(id) on delete cascade,
-  title text not null check (char_length(title) between 3 and 140),
-  slug text unique not null,
-  excerpt text not null check (char_length(excerpt) between 10 and 300),
-  content text not null check (char_length(content) >= 30),
-  cover_url text,
-  category text not null default 'News',
-  status text not null default 'pending' check (status in ('draft', 'pending', 'published', 'rejected')),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  published_at timestamptz
+-- Articles table
+CREATE TABLE IF NOT EXISTS articles (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ title TEXT NOT NULL CHECK (char_length(title) BETWEEN 3 AND 140),
+ slug TEXT UNIQUE NOT NULL,
+ excerpt TEXT NOT NULL CHECK (char_length(excerpt) BETWEEN 10 AND 300),
+ content TEXT NOT NULL CHECK (char_length(content) >= 30),
+ cover_url TEXT,
+ category TEXT DEFAULT 'News',
+ status TEXT DEFAULT 'draft' CHECK (status IN ('draft', 'pending', 'published', 'rejected')),
+ created_at TIMESTAMPTZ DEFAULT NOW(),
+ updated_at TIMESTAMPTZ DEFAULT NOW(),
+ published_at TIMESTAMPTZ
 );
+CREATE INDEX IF NOT EXISTS articles_status_created_idx ON articles(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS articles_author_idx ON articles(author_id);
+CREATE INDEX IF NOT EXISTS articles_slug_idx ON articles(slug);
 
-create index if not exists articles_status_created_idx on articles(status, created_at desc);
-create index if not exists articles_author_idx on articles(author_id);
-create index if not exists articles_slug_idx on articles(slug);
-
--- ---------------------------------------------------------------------------
--- comments
--- ---------------------------------------------------------------------------
-create table if not exists comments (
-  id uuid primary key default gen_random_uuid(),
-  article_id uuid not null references articles(id) on delete cascade,
-  author_id uuid not null references users(id) on delete cascade,
-  content text not null check (char_length(content) between 1 and 2000),
-  status text not null default 'published' check (status in ('published', 'pending', 'rejected', 'removed')),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+-- Comments table
+CREATE TABLE IF NOT EXISTS comments (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ article_id UUID NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+ author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ content TEXT NOT NULL,
+ status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+ created_at TIMESTAMPTZ DEFAULT NOW(),
+ updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS comments_article_idx ON comments(article_id);
+CREATE INDEX IF NOT EXISTS comments_author_idx ON comments(author_id);
 
-create index if not exists comments_article_idx on comments(article_id, created_at desc);
-create index if not exists comments_author_idx on comments(author_id);
-create index if not exists comments_status_idx on comments(status);
-
--- ---------------------------------------------------------------------------
--- reports (moderation)
--- ---------------------------------------------------------------------------
-create table if not exists reports (
-  id uuid primary key default gen_random_uuid(),
-  article_id uuid references articles(id) on delete cascade,
-  comment_id uuid references comments(id) on delete cascade,
-  reporter_id uuid not null references users(id) on delete cascade,
-  reason text not null check (char_length(reason) between 3 and 500),
-  status text not null default 'open' check (status in ('open', 'reviewing', 'resolved', 'dismissed')),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint reports_target_check check (
-    (article_id is not null and comment_id is null) or
-    (article_id is null and comment_id is not null)
-  )
+-- Reports table for moderation
+CREATE TABLE IF NOT EXISTS reports (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ article_id UUID REFERENCES articles(id) ON DELETE CASCADE,
+ comment_id UUID REFERENCES comments(id) ON DELETE CASCADE,
+ reporter_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ reason TEXT NOT NULL,
+ status TEXT DEFAULT 'open' CHECK (status IN ('open', 'reviewed', 'resolved')),
+ created_at TIMESTAMPTZ DEFAULT NOW(),
+ updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS reports_article_idx ON reports(article_id);
+CREATE INDEX IF NOT EXISTS reports_status_idx ON reports(status);
 
-create index if not exists reports_status_idx on reports(status, created_at desc);
-create index if not exists reports_article_idx on reports(article_id);
-create index if not exists reports_comment_idx on reports(comment_id);
-create index if not exists reports_reporter_idx on reports(reporter_id);
+-- Auto-update timestamps
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+ NEW.updated_at = NOW();
+ RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
--- ---------------------------------------------------------------------------
--- triggers: auto-update updated_at on every table that has it
--- ---------------------------------------------------------------------------
-create or replace function touch_updated_at() returns trigger language plpgsql as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
+DROP TRIGGER IF EXISTS users_updated_at ON users;
+CREATE TRIGGER users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
-drop trigger if exists users_touch_updated_at on users;
-create trigger users_touch_updated_at before update on users
-  for each row execute procedure touch_updated_at();
+DROP TRIGGER IF EXISTS profiles_updated_at ON profiles;
+CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON profiles FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
-drop trigger if exists profiles_touch_updated_at on profiles;
-create trigger profiles_touch_updated_at before update on profiles
-  for each row execute procedure touch_updated_at();
+DROP TRIGGER IF EXISTS articles_updated_at ON articles;
+CREATE TRIGGER articles_updated_at BEFORE UPDATE ON articles FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
-drop trigger if exists articles_touch_updated_at on articles;
-create trigger articles_touch_updated_at before update on articles
-  for each row execute procedure touch_updated_at();
+DROP TRIGGER IF EXISTS comments_updated_at ON comments;
+CREATE TRIGGER comments_updated_at BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
-drop trigger if exists comments_touch_updated_at on comments;
-create trigger comments_touch_updated_at before update on comments
-  for each row execute procedure touch_updated_at();
+DROP TRIGGER IF EXISTS reports_updated_at ON reports;
+CREATE TRIGGER reports_updated_at BEFORE UPDATE ON reports FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
-drop trigger if exists reports_touch_updated_at on reports;
-create trigger reports_touch_updated_at before update on reports
-  for each row execute procedure touch_updated_at();
-
--- ---------------------------------------------------------------------------
--- function: set published_at automatically when an article becomes published
--- ---------------------------------------------------------------------------
-create or replace function set_article_published_at() returns trigger language plpgsql as $$
-begin
-  if new.status = 'published' and (old.status is distinct from 'published') then
-    new.published_at = now();
-  end if;
-
-  if new.status <> 'published' then
-    new.published_at = null;
-  end if;
-
-  return new;
-end;
-$$;
-
-drop trigger if exists articles_set_published_at on articles;
-create trigger articles_set_published_at before update on articles
-  for each row execute procedure set_article_published_at();
-
--- ---------------------------------------------------------------------------
--- helper functions for role checks (used by application code / future SQL)
--- ---------------------------------------------------------------------------
-create or replace function is_staff(check_user_id uuid) returns boolean language sql stable as $$
-  select exists(select 1 from users where id = check_user_id and role in ('admin', 'moderator'));
-$$;
-
-create or replace function is_admin(check_user_id uuid) returns boolean language sql stable as $$
-  select exists(select 1 from users where id = check_user_id and role = 'admin');
-$$;
-
--- After your first Google login, promote your own account to admin with:
--- update users set role = 'admin' where email = 'you@example.com';
