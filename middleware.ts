@@ -1,20 +1,38 @@
-import { createServerClient } from '@supabase/ssr';
+import { getSession } from '@/lib/session';
+import { query } from '@/lib/db';
 import { NextResponse, type NextRequest } from 'next/server';
 
 export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({ request });
-  const supabase = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
-    cookies: {
-      getAll: () => request.cookies.getAll(),
-      setAll: (cookiesToSet) => {
-        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-        response = NextResponse.next({ request });
-        cookiesToSet.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
-      }
+  const { pathname } = request.nextUrl;
+
+  if (!pathname.startsWith('/admin')) {
+    return NextResponse.next();
+  }
+
+  const session = await getSession();
+
+  if (!session) {
+    const loginUrl = new URL('/login', request.url);
+    loginUrl.searchParams.set('redirect', pathname);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  try {
+    const result = await query<{ role: string }>('select role from users where id = $1', [session.userId]);
+    const role = result.rows[0]?.role;
+
+    if (role !== 'admin' && role !== 'moderator') {
+      return NextResponse.redirect(new URL('/', request.url));
     }
-  });
-  await supabase.auth.getUser();
-  return response;
+  } catch (err) {
+    console.error('Failed to verify admin role in middleware:', err);
+    return NextResponse.redirect(new URL('/', request.url));
+  }
+
+  return NextResponse.next();
 }
 
-export const config = { matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'] };
+export const config = {
+  matcher: ['/admin/:path*'],
+  runtime: 'nodejs'
+};
