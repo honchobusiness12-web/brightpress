@@ -1,38 +1,36 @@
 import { getSession } from '@/lib/session';
-import { query } from '@/lib/db';
 import { NextResponse, type NextRequest } from 'next/server';
+import { query } from '@/lib/db';
 
 export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+ const session = await getSession();
 
-  if (!pathname.startsWith('/admin')) {
-    return NextResponse.next();
-  }
+ // Protect admin routes
+ if (request.nextUrl.pathname.startsWith('/admin')) {
+ if (!session) {
+ return NextResponse.redirect(new URL('/admin/login', request.url));
+ }
 
-  const session = await getSession();
+ // Check if user is admin/moderator
+ try {
+ const result = await query(
+ 'SELECT role FROM users WHERE id = $1',
+ [session.userId]
+ );
 
-  if (!session) {
-    const loginUrl = new URL('/login', request.url);
-    loginUrl.searchParams.set('redirect', pathname);
-    return NextResponse.redirect(loginUrl);
-  }
+ if (!result.rows[0] || !['admin', 'moderator'].includes(result.rows[0].role)) {
+ return NextResponse.redirect(new URL('/', request.url));
+ }
+ } catch (error) {
+ console.error('Admin check error:', error);
+ return NextResponse.redirect(new URL('/', request.url));
+ }
+ }
 
-  try {
-    const result = await query<{ role: string }>('select role from users where id = $1', [session.userId]);
-    const role = result.rows[0]?.role;
-
-    if (role !== 'admin' && role !== 'moderator') {
-      return NextResponse.redirect(new URL('/', request.url));
-    }
-  } catch (err) {
-    console.error('Failed to verify admin role in middleware:', err);
-    return NextResponse.redirect(new URL('/', request.url));
-  }
-
-  return NextResponse.next();
+ return NextResponse.next();
 }
 
 export const config = {
-  matcher: ['/admin/:path*'],
-  runtime: 'nodejs'
+ matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
 };
+

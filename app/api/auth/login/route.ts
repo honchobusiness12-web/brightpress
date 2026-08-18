@@ -1,22 +1,20 @@
 import { getGoogleAuthUrl } from '@/lib/auth';
-import { NextResponse, type NextRequest } from 'next/server';
-import { randomBytes } from 'crypto';
-
-const STATE_COOKIE_NAME = 'brightpress_oauth_state';
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 
 export async function GET(request: NextRequest) {
-  const state = randomBytes(32).toString('hex');
-  const authUrl = getGoogleAuthUrl(state);
+ const state = crypto.randomBytes(32).toString('hex');
+ const url = getGoogleAuthUrl(state);
 
-  const response = NextResponse.redirect(authUrl);
+ const response = NextResponse.redirect(url);
+ response.cookies.set('oauth_state', state, {
+ httpOnly: true,
+ secure: process.env.NODE_ENV === 'production',
+ sameSite: 'lax',
+ maxAge: 600, // 10 minutes
+ path: '/',
+ });
 
-  response.cookies.set(STATE_COOKIE_NAME, state, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 60 * 10 // 10 minutes
-  });
-
-  return response;
+ return response;
 }
+
